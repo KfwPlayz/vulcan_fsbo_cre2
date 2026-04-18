@@ -72,7 +72,7 @@ const folderName = `FSBO Leads Week of ${monday.getMonth() + 1}.${monday.getDate
     const passSel  = (await page.$('input[name="password"]')) ? 'input[name="password"]' : '#password';
 
     await page.type(emailSel, EMAIL, { delay: 20 });
-    await page.type(passSel,  PASSWORD, { delay: 20 });
+    await page.type(passSel, PASSWORD, { delay: 20 });
 
     await Promise.all([
       page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 120000 }),
@@ -133,7 +133,7 @@ const folderName = `FSBO Leads Week of ${monday.getMonth() + 1}.${monday.getDate
     if (fs.existsSync(CACHE_FILE)) {
       try {
         sentCache = new Set(JSON.parse(fs.readFileSync(CACHE_FILE, "utf-8")));
-      } catch { /* ignore bad cache */ }
+      } catch {}
     }
 
     const unsentLeads = [], newKeys = [];
@@ -145,119 +145,161 @@ const folderName = `FSBO Leads Week of ${monday.getMonth() + 1}.${monday.getDate
       }
     }
 
-     for (const lead of unsentLeads) {
-  const detailPage = await browser.newPage();
-  try {
-    const detailUrl = `https://www.vulcan7dialer.com/cm/index#contact/${lead.contact_id}`;
-    await detailPage.goto(detailUrl, { waitUntil: "domcontentloaded", timeout: 120000 });
+    for (const lead of unsentLeads) {
+      const detailPage = await browser.newPage();
+      try {
+        const detailUrl = `https://www.vulcan7dialer.com/cm/index#contact/${lead.contact_id}`;
+        await detailPage.goto(detailUrl, { waitUntil: "domcontentloaded", timeout: 120000 });
 
-    await detailPage.waitForFunction(() => {
-      const ths = Array.from(document.querySelectorAll("th"));
-      return ths.some(th => th.textContent.includes("MLS Number"));
-    }, { timeout: 15000 });
+        await detailPage.waitForFunction(() => {
+          const ths = Array.from(document.querySelectorAll("th"));
+          return ths.some(th => th.textContent.includes("MLS Number"));
+        }, { timeout: 15000 });
 
-    const detailData = await detailPage.evaluate(() => {
-      const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
+        const detailData = await detailPage.evaluate(() => {
+          const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
 
-      const getTextAfterTh = (label) => {
-        const ths = Array.from(document.querySelectorAll("tr th"));
-        for (const th of ths) {
-          const thText = clean(th.textContent || "").toLowerCase();
-          if (thText.includes(label.toLowerCase().replace(":", ""))) {
-            const td = th.nextElementSibling;
-            return td ? clean(td.textContent) : "";
-          }
-        }
-        return "";
-      };
-
-      const getBedsAndBaths = () => {
-        const val = getTextAfterTh("Beds");
-        const [bedsRaw, bathsRaw] = val.split("/").map(v => clean(v));
-        return {
-          beds: bedsRaw || "",
-          baths: bathsRaw || ""
-        };
-      };
-
-      // Address object
-      let address = { street: "", city: "", state: "", zip: "" };
-      const addrEl = document.querySelector('a[data-type="address"]');
-      if (addrEl) {
-        try {
-          const data = JSON.parse(addrEl.getAttribute("data-value") || "{}");
-          address = {
-            street: data.address || "",
-            city: data.city || "",
-            state: data.state || "",
-            zip: data.zip || ""
+          const getTextAfterTh = (label) => {
+            const ths = Array.from(document.querySelectorAll("tr th"));
+            for (const th of ths) {
+              const thText = clean(th.textContent || "").toLowerCase();
+              if (thText.includes(label.toLowerCase().replace(":", ""))) {
+                const td = th.nextElementSibling;
+                return td ? clean(td.textContent) : "";
+              }
+            }
+            return "";
           };
+
+          const getBedsAndBaths = () => {
+            const val = getTextAfterTh("Beds");
+            const [bedsRaw, bathsRaw] = val.split("/").map(v => clean(v));
+            return {
+              beds: bedsRaw || "",
+              baths: bathsRaw || ""
+            };
+          };
+
+          const getPhones = () => {
+            const phoneLinks = Array.from(
+              document.querySelectorAll('tbody[data-section="phones"] a[data-type="phone"]')
+            ).slice(0, 5);
+
+            const phones = [];
+
+            for (let i = 0; i < 5; i++) {
+              const el = phoneLinks[i];
+
+              if (!el) {
+                phones.push("");
+                continue;
+              }
+
+              let parsed = {};
+              try {
+                parsed = JSON.parse(el.getAttribute("data-value") || "{}");
+              } catch {}
+
+              const rawText = (el.textContent || "").trim();
+              const cleanNumber = rawText
+                .replace(/\((Home|Work|Mobile|Fax|Other)\)/gi, "")
+                .trim();
+
+              phones.push(parsed.phone || parsed.raw_phone || cleanNumber);
+            }
+
+            return phones;
+          };
+
+          // Address object
+          let address = { street: "", city: "", state: "", zip: "" };
+          const addrEl = document.querySelector('a[data-type="address"]');
+          if (addrEl) {
+            try {
+              const data = JSON.parse(addrEl.getAttribute("data-value") || "{}");
+              address = {
+                street: data.address || "",
+                city: data.city || "",
+                state: data.state || "",
+                zip: data.zip || ""
+              };
+            } catch {}
+          }
+
+          // Link grabber
+          const links = Array.from(document.querySelectorAll("a[href]")).map(a => a.getAttribute("href"));
+
+          const matchLink = (pattern) => {
+            const regex = new RegExp(pattern, "i");
+            return links.find(href => regex.test(href)) || "";
+          };
+
+          const zillowRelative = links.find(h => h.includes("/zillow/go_to_site")) || "";
+          const zillowLink = zillowRelative ? `https://www.vulcan7dialer.com${zillowRelative}` : "";
+
+          const { beds, baths } = getBedsAndBaths();
+          const phones = getPhones();
+
+          return {
+            street: address.street,
+            city: address.city,
+            state: address.state,
+            zip: address.zip,
+            mls_number: getTextAfterTh("MLS Number"),
+            property_type: getTextAfterTh("Property Type"),
+            mls_status: getTextAfterTh("MLS Status"),
+            status_change_date: getTextAfterTh("Status Change Date"),
+            list_price: getTextAfterTh("List Price"),
+            beds,
+            baths,
+            square_footage: getTextAfterTh("Square Footage"),
+            days_on_market: getTextAfterTh("Days On Market"),
+            listing_agent: getTextAfterTh("Listing Agent"),
+            listing_office: getTextAfterTh("Listing Office"),
+            zillow_link: zillowLink,
+            google_maps_link: matchLink("google\\.(com|ca)/maps|maps\\.google"),
+            facebook: matchLink("facebook\\.com"),
+            instagram: matchLink("instagram\\.com"),
+            linkedin: matchLink("linkedin\\.com"),
+            twitter: matchLink("twitter\\.com"),
+            tiktok: matchLink("tiktok\\.com"),
+            youtube: matchLink("youtube\\.com"),
+
+            phone_1: phones[0],
+            phone_2: phones[1],
+            phone_3: phones[2],
+            phone_4: phones[3],
+            phone_5: phones[4]
+          };
+        });
+
+        Object.assign(
+          lead,
+          {
+            street: "", city: "", state: "", zip: "",
+            mls_number: "", property_type: "", mls_status: "", status_change_date: "", list_price: "",
+            beds: "", baths: "", square_footage: "", days_on_market: "",
+            listing_agent: "", listing_office: "",
+            zillow_link: "", google_maps_link: "",
+            facebook: "", instagram: "", linkedin: "", twitter: "", tiktok: "", youtube: "",
+            phone_1: "", phone_2: "", phone_3: "", phone_4: "", phone_5: ""
+          },
+          detailData
+        );
+
+        // Make "phone" match phone_1 from the detail page
+        lead.phone = detailData.phone_1 || "";
+
+      } catch (err) {
+        console.error(`⚠️ Detail fetch failed for ${lead.full_name}: ${err.message}`);
+        try {
+          await detailPage.screenshot({ path: `failure_${lead.contact_id}.png`, fullPage: true });
         } catch {}
+      } finally {
+        await detailPage.close();
+        await sleep(300);
       }
-
-      // Link grabber
-      const links = Array.from(document.querySelectorAll("a[href]")).map(a => a.getAttribute("href"));
-
-      const matchLink = (pattern) => {
-        const regex = new RegExp(pattern, "i");
-        return links.find(href => regex.test(href)) || "";
-      };
-
-      const zillowRelative = links.find(h => h.includes("/zillow/go_to_site")) || "";
-      const zillowLink = zillowRelative ? `https://www.vulcan7dialer.com${zillowRelative}` : "";
-
-      const { beds, baths } = getBedsAndBaths();
-
-      return {
-        street: address.street,
-        city: address.city,
-        state: address.state,
-        zip: address.zip,
-        mls_number: getTextAfterTh("MLS Number"),
-        property_type: getTextAfterTh("Property Type"),
-        mls_status: getTextAfterTh("MLS Status"),
-        status_change_date: getTextAfterTh("Status Change Date"),
-        list_price: getTextAfterTh("List Price"),
-        beds,
-        baths,
-        square_footage: getTextAfterTh("Square Footage"),
-        days_on_market: getTextAfterTh("Days On Market"),
-        listing_agent: getTextAfterTh("Listing Agent"),
-        listing_office: getTextAfterTh("Listing Office"),
-        zillow_link: zillowLink,
-        google_maps_link: matchLink("google\\.(com|ca)/maps|maps\\.google"),
-        facebook: matchLink("facebook\\.com"),
-        instagram: matchLink("instagram\\.com"),
-        linkedin: matchLink("linkedin\\.com"),
-        twitter: matchLink("twitter\\.com"),
-        tiktok: matchLink("tiktok\\.com"),
-        youtube: matchLink("youtube\\.com")
-      };
-    });
-
-    Object.assign(
-      lead,
-      {
-        street: "", city: "", state: "", zip: "",
-        mls_number: "", property_type: "", mls_status: "", status_change_date: "", list_price: "",
-        beds: "", baths: "", square_footage: "", days_on_market: "",
-        listing_agent: "", listing_office: "",
-        zillow_link: "", google_maps_link: "",
-        facebook: "", instagram: "", linkedin: "", twitter: "", tiktok: "", youtube: ""
-      },
-      detailData
-    );
-
-  } catch (err) {
-    console.error(`⚠️ Detail fetch failed for ${lead.full_name}: ${err.message}`);
-    try {
-      await detailPage.screenshot({ path: `failure_${lead.contact_id}.png`, fullPage: true });
-    } catch {}
-  } finally {
-    await detailPage.close();
-    await sleep(300);
-  }
-}
+    }
 
     // 📤 Send to Zapier
     for (const lead of unsentLeads) {
@@ -311,71 +353,109 @@ const folderName = `FSBO Leads Week of ${monday.getMonth() + 1}.${monday.getDate
       console.log(`✅ Folder "${folderName}" already exists — skipping creation.`);
     }
 
-    // 📂 Move contacts (robust)
+    // 📂 Move contacts
     await page.goto(CONTACTS_URL, { waitUntil: "domcontentloaded", timeout: 120000 });
     await page.waitForSelector("#master_checkbox", { visible: true, timeout: 120000 });
-    await page.click("#master_checkbox");
-    console.log("✅ Selected all contacts via master checkbox.");
+    await sleep(1500);
 
-    // Click the Move button
-    await page.waitForSelector("#cm_move_button", { visible: true, timeout: 120000 });
-    await page.click("#cm_move_button");
-    await sleep(800);
-
-    // Wait for either the dropdown container OR the folder items to exist
-    const menuShown = await page.waitForFunction(() => {
-      return !!document.querySelector("#cm_move_dropdown") ||
-             document.querySelectorAll("li.move-contacts-folder[title]").length > 0 ||
-             document.querySelectorAll("#cm_move_dropdown li, .dropdown-menu li").length > 0;
-    }, { timeout: 10000 }).catch(() => false);
-
-    // If not shown, try clicking again once
-    if (!menuShown) {
-      console.log("↻ Move menu not detected, retrying click…");
-      await page.click("#cm_move_button");
-      await sleep(1200);
+    // Select all contacts
+    const alreadyChecked = await page.$eval("#master_checkbox", el => !!el.checked).catch(() => false);
+    if (!alreadyChecked) {
+      await page.click("#master_checkbox");
+      await sleep(1000);
     }
 
-    // Log what we see for debugging
-    const menuDebug = await page.evaluate(() => ({
-      hasDropdown: !!document.querySelector("#cm_move_dropdown"),
-      itemsByTitle: document.querySelectorAll("li.move-contacts-folder[title]").length,
-      anyLis: document.querySelectorAll("#cm_move_dropdown li, .dropdown-menu li").length
-    }));
-    console.log("ℹ️ Move menu debug:", JSON.stringify(menuDebug));
+    const isChecked = await page.$eval("#master_checkbox", el => !!el.checked).catch(() => false);
+    if (!isChecked) {
+      throw new Error("Master checkbox was not checked.");
+    }
 
-    // Try to click the target folder in a broad way
-    const moveSuccess = await page.evaluate((folderName) => {
+    console.log("✅ Selected all contacts via master checkbox.");
+
+    // Open move menu
+    await page.waitForSelector("#cm_move_button", { visible: true, timeout: 120000 });
+    await page.click("#cm_move_button");
+    await sleep(1500);
+
+    // Wait for dropdown items
+    await page.waitForFunction(() => {
+      return document.querySelectorAll("li.move-contacts-folder[title]").length > 0 ||
+             document.querySelectorAll("#cm_move_dropdown li, .dropdown-menu li").length > 0;
+    }, { timeout: 10000 });
+
+    // Click exact folder entry
+    const clickedFolder = await page.evaluate((targetFolderName) => {
+      const normalize = (s) => (s || "").replace(/\s+/g, " ").trim();
+
       let items = Array.from(document.querySelectorAll("li.move-contacts-folder[title]"));
       if (!items.length) {
-        items = Array.from(document.querySelectorAll("#cm_move_dropdown li, .dropdown-menu li, li"));
+        items = Array.from(document.querySelectorAll("#cm_move_dropdown li, .dropdown-menu li"));
       }
+
       for (const item of items) {
-        const title = (item.getAttribute("title") || item.textContent || "").trim();
-        if (title === folderName.trim()) {
-          const link = item.querySelector("a.move-to-folder") || item.querySelector("a, .dropdown-item, button");
-          if (link) { link.click(); return true; }
+        const title = normalize(item.getAttribute("title") || item.textContent || "");
+        if (title === normalize(targetFolderName)) {
+          const link =
+            item.querySelector("a.move-to-folder") ||
+            item.querySelector("a") ||
+            item;
+
+          link.scrollIntoView({ block: "center" });
+          link.click();
+          return true;
         }
       }
+
       return false;
     }, folderName);
 
-    // Confirm modal if it appears
-    try {
-      await page.waitForSelector("#bulk_actions_modal button.btn.btn-primary", { visible: true, timeout: 5000 });
-      await page.click("#bulk_actions_modal button.btn.btn-primary");
-      console.log("🟢 Confirmed move modal.");
-    } catch {
-      console.warn("⚠️ 'Okay' button did not appear after move.");
+    if (!clickedFolder) {
+      throw new Error(`Could not find move folder: ${folderName}`);
     }
 
-    if (moveSuccess) {
-      console.log(`✅ Move to folder "${folderName}" triggered`);
-      await sleep(3000);
-    } else {
-      console.error(`❌ Could not find move folder: ${folderName}`);
-      try { await page.screenshot({ path: "failure_move.png", fullPage: true }); } catch {}
+    console.log(`✅ Clicked folder "${folderName}" in move menu.`);
+    await sleep(1500);
+
+    // Confirm modal if it appears
+    try {
+      await page.waitForSelector("#bulk_actions_modal", { visible: true, timeout: 5000 });
+
+      const confirmed = await page.evaluate(() => {
+        const modal = document.querySelector("#bulk_actions_modal");
+        if (!modal) return false;
+
+        const buttons = Array.from(modal.querySelectorAll("button"));
+        const btn = buttons.find(b =>
+          /okay|ok|move|confirm/i.test((b.textContent || "").trim())
+        );
+
+        if (btn) {
+          btn.click();
+          return true;
+        }
+
+        const primary = modal.querySelector("button.btn.btn-primary");
+        if (primary) {
+          primary.click();
+          return true;
+        }
+
+        return false;
+      });
+
+      if (confirmed) {
+        console.log("🟢 Confirmed move modal.");
+        await sleep(3000);
+      } else {
+        console.warn("⚠️ Move modal appeared, but confirm button was not found.");
+      }
+    } catch {
+      console.log("ℹ️ No confirmation modal appeared.");
     }
+
+    // Give Vulcan7 time to process
+    await sleep(4000);
+    console.log(`✅ Move attempt finished for folder "${folderName}"`);
 
   } catch (err) {
     console.error("❌ Script Error:", err);
