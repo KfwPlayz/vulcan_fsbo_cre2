@@ -14,7 +14,7 @@ const FOLDER_URL = "https://www.vulcan7dialer.com/cm/folders/index";
 const EMAIL = process.env.EMAIL;
 const PASSWORD = process.env.PASSWORD;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
-const CACHE_FILE = path.join(__dirname, "sent-leads-cache-fsbo.json");
+// const CACHE_FILE = path.join(__dirname, "sent-leads-cache-fsbo.json");
 
 // 📅 Folder name = Monday of current week
 const today = new Date();
@@ -128,22 +128,24 @@ const folderName = `FSBO Leads Week of ${monday.getMonth() + 1}.${monday.getDate
       }
     }
 
-    // 🧠 Load cache
-    let sentCache = new Set();
-    if (fs.existsSync(CACHE_FILE)) {
-      try {
-        sentCache = new Set(JSON.parse(fs.readFileSync(CACHE_FILE, "utf-8")));
-      } catch {}
-    }
+    // // 🧠 Load cache
+    // let sentCache = new Set();
+    // if (fs.existsSync(CACHE_FILE)) {
+    //   try {
+    //     sentCache = new Set(JSON.parse(fs.readFileSync(CACHE_FILE, "utf-8")));
+    //   } catch {}
+    // }
 
-    const unsentLeads = [], newKeys = [];
-    for (const lead of filtered) {
-      const key = `${lead.full_name}|${lead.phone}`;
-      if (!sentCache.has(key)) {
-        unsentLeads.push(lead);
-        newKeys.push(key);
-      }
-    }
+    // const unsentLeads = [], newKeys = [];
+    // for (const lead of filtered) {
+    //   const key = `${lead.full_name}|${lead.phone}`;
+    //   if (!sentCache.has(key)) {
+    //     unsentLeads.push(lead);
+    //     newKeys.push(key);
+    //   }
+    // }
+
+    const unsentLeads = filtered;
 
     for (const lead of unsentLeads) {
       const detailPage = await browser.newPage();
@@ -311,9 +313,9 @@ const folderName = `FSBO Leads Week of ${monday.getMonth() + 1}.${monday.getDate
       }
     }
 
-    // 💾 Save updated cache
-    const updatedCache = [...sentCache, ...newKeys];
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(updatedCache, null, 2));
+    // // 💾 Save updated cache
+    // const updatedCache = [...sentCache, ...newKeys];
+    // fs.writeFileSync(CACHE_FILE, JSON.stringify(updatedCache, null, 2));
 
     // 📁 Check/create folder
     await page.goto(CONTACTS_URL, { waitUntil: "domcontentloaded", timeout: 120000 });
